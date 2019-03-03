@@ -2,23 +2,18 @@
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
-using System.Linq;
-using System.Reflection;
-using System.Windows.Forms;
-using MusicBeePlugin.Domain;
 using MusicBeePlugin.Helpers;
-using MusicBeePlugin.Interfaces;
 using MusicBeePlugin.Properties;
 using MusicBeePlugin.Windows;
 
 namespace MusicBeePlugin
 {
     // ReSharper disable once ClassNeverInstantiated.Global
-    public partial class Plugin
+    public class Plugin
     {
         private readonly Interfaces.Plugin.PluginInfo _about = new Interfaces.Plugin.PluginInfo();
-        private SettingsWindow _settingsWindow;
         private Interfaces.Plugin.MusicBeeApiInterface _mbApiInterface;
+        private SettingsWindow _settingsWindow;
 
         // ReSharper disable once UnusedMember.Global
         public Interfaces.Plugin.PluginInfo Initialise(IntPtr apiInterfacePtr)
@@ -29,6 +24,8 @@ namespace MusicBeePlugin
             Subsonic.CreateBackgroundTask = _mbApiInterface.MB_CreateBackgroundTask;
             Subsonic.SetBackgroundTaskMessage = _mbApiInterface.MB_SetBackgroundTaskMessage;
             Subsonic.RefreshPanels = _mbApiInterface.MB_RefreshPanels;
+            Subsonic.GetFileTag = _mbApiInterface.Library_GetFileTag;
+            //Subsonic.GetFileTags = _mbApiInterface.Library_GetFileTags;
             _about.PluginInfoVersion = Interfaces.Plugin.PluginInfoVersion;
             _about.Name = "Subsonic Client";
             _about.Description = "Access files and playlists on a SubSonic (or compatible) Server";
@@ -37,12 +34,14 @@ namespace MusicBeePlugin
             // current only applies to artwork, lyrics or instant messenger name that appears in the provider drop down selector or target Instant Messenger
             _about.Type = Interfaces.Plugin.PluginType.Storage;
             _about.VersionMajor = 2; // your plugin version
-            _about.VersionMinor = 20;
+            _about.VersionMinor = 25;
             _about.Revision = 0;
             _about.MinInterfaceVersion = Interfaces.Plugin.MinInterfaceVersion;
             _about.MinApiRevision = Interfaces.Plugin.MinApiRevision;
-            _about.ReceiveNotifications = Interfaces.Plugin.ReceiveNotificationFlags.StartupOnly;
-            _about.ConfigurationPanelHeight = 0; // height in pixels that musicbee should reserve in a panel for config settings. When set, a handle to an empty panel will be passed to the Configure function
+            _about.ReceiveNotifications = Interfaces.Plugin.ReceiveNotificationFlags.PlayerEvents |
+                                          Interfaces.Plugin.ReceiveNotificationFlags.TagEvents;
+            _about.ConfigurationPanelHeight =
+                0; // height in pixels that musicbee should reserve in a panel for config settings. When set, a handle to an empty panel will be passed to the Configure function
 
             _settingsWindow = new SettingsWindow(_mbApiInterface, _about);
             return _about;
@@ -88,22 +87,49 @@ namespace MusicBeePlugin
         public void ReceiveNotification(string sourceFileUrl, Interfaces.Plugin.NotificationType type)
         {
             // perform some action depending on the notification type
-            //switch (type)
+            switch (type)
+            {
+                case Interfaces.Plugin.NotificationType.PluginStartup:
+                    var dataPath = _mbApiInterface.Setting_GetPersistentStoragePath();
+                    Subsonic.CacheFilename = Path.Combine(dataPath, "subsonicCache.dat");
+                    Subsonic.SettingsFilename = Path.Combine(dataPath, "subsonicSettings.dat");
 
-            if (type != Interfaces.Plugin.NotificationType.PluginStartup) return;
+                    Subsonic.SendNotificationsHandler.Invoke(Subsonic.Initialize()
+                        ? Interfaces.Plugin.CallbackType.StorageReady
+                        : Interfaces.Plugin.CallbackType.StorageFailed);
+                    break;
 
-            var dataPath = _mbApiInterface.Setting_GetPersistentStoragePath();
-            Subsonic.CacheFilename = Path.Combine(dataPath, "subsonicCache.dat");
-            Subsonic.SettingsFilename = Path.Combine(dataPath, "subsonicSettings.dat");
+                case Interfaces.Plugin.NotificationType.TagsChanged:
+                    //var tags = new List<Interfaces.Plugin.MetaDataType>
+                    //{
+                    //    Interfaces.Plugin.MetaDataType.Artist,
+                    //    Interfaces.Plugin.MetaDataType.TrackTitle,
+                    //    Interfaces.Plugin.MetaDataType.Album,
+                    //    Interfaces.Plugin.MetaDataType.Year,
+                    //    Interfaces.Plugin.MetaDataType.TrackNo,
+                    //    Interfaces.Plugin.MetaDataType.Genre,
+                    //    Interfaces.Plugin.MetaDataType.Artwork,
+                    //    Interfaces.Plugin.MetaDataType.DiscNo,
+                    //    Interfaces.Plugin.MetaDataType.RatingLove,
+                    //    Interfaces.Plugin.MetaDataType.Rating
+                    //};
 
-            Subsonic.SendNotificationsHandler.Invoke(Subsonic.Initialize()
-                ? Interfaces.Plugin.CallbackType.StorageReady
-                : Interfaces.Plugin.CallbackType.StorageFailed);
+                    //Subsonic.GetFileTags(sourceFileUrl, tags.ToArray(), out var results);
+                    //Subsonic.UpdateTags(results);
 
-            //case NotificationType.TrackChanged:
-            //    string artist = mbApiInterface.NowPlaying_GetFileTag(MetaDataType.Artist);
-            //    // ...
-            //    break;
+                    var rating = Subsonic.GetFileTag(sourceFileUrl, Interfaces.Plugin.MetaDataType.Rating);
+                    var starred = Subsonic.GetFileTag(sourceFileUrl, Interfaces.Plugin.MetaDataType.RatingLove);
+                    var id = Subsonic.GetFileTag(sourceFileUrl, Interfaces.Plugin.MetaDataType.Custom16);
+
+                    Subsonic.UpdateRating(id, rating);
+                    Subsonic.UpdateRatingLove(id, starred);
+                    break;
+
+                //case NotificationType.TrackChanged:
+                //    string artist = mbApiInterface.NowPlaying_GetFileTag(MetaDataType.Artist);
+                //    // ...
+                //    break;
+            }
         }
 
 
@@ -135,15 +161,11 @@ namespace MusicBeePlugin
         public void Refresh()
         {
             if (Subsonic.IsInitialized)
-            {
                 Subsonic.Refresh();
-            }
             else
-            {
                 Subsonic.SendNotificationsHandler.Invoke(Subsonic.Initialize()
                     ? Interfaces.Plugin.CallbackType.StorageReady
                     : Interfaces.Plugin.CallbackType.StorageFailed);
-            }
         }
 
         public bool IsReady()
